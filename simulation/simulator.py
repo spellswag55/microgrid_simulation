@@ -1,4 +1,5 @@
 import pandas as pd
+from controller.safety_invariants import SafetyInvariants
 
 class MicrogridSimulator:
     def __init__(self, solar, battery, generator, controller):
@@ -19,6 +20,17 @@ class MicrogridSimulator:
             decision = self.controller.decide(
                 solar_kw, load_kw, self.battery
             )
+            # ==============================
+            # SAFETY INVARIANT CHECK (PHASE 2 FINAL)
+            # ==============================
+            SafetyInvariants.check(
+                soc=self.battery.soc,
+                generator_cmd="START" if decision["generator"] else "STOP",
+                generator_available=True,   # generator faults not modeled yet
+                load_shed_level=0,          # load shedding not wired yet
+                safe_mode=False             # SAFE_MODE not wired yet
+            )
+
 
             if decision["generator"]:
                 self.generator.start()

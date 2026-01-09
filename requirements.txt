@@ -4,3 +4,5 @@ scikit-learn
 lightgbm
 joblib
 matplotlib
+streamlit
+plotly

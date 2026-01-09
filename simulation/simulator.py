@@ -1,6 +1,7 @@
 import pandas as pd
 from controller.safety_invariants import SafetyInvariants
 
+
 class MicrogridSimulator:
     def __init__(self, solar, battery, generator, controller):
         self.solar = solar
@@ -8,53 +9,81 @@ class MicrogridSimulator:
         self.generator = generator
         self.controller = controller
 
+    def _get_value(self, profile, t):
+        """
+        Safely extract a scalar value from list, Series, or DataFrame.
+        """
+        if isinstance(profile, pd.DataFrame):
+            return profile.iloc[t, 0]
+        elif isinstance(profile, pd.Series):
+            return profile.iloc[t]
+        else:
+            return profile[t]
+
     def run(self, load_profile, solar_profile):
         results = []
 
-        for hour in range(24):
-            load_kw = load_profile.loc[hour, "load_kw"]
-            solar_kw = self.solar.get_power(
-                solar_profile.loc[hour, "solar_kw"]
+        horizon = len(load_profile)
+
+        for t in range(horizon):
+            load_kw = self._get_value(load_profile, t)
+            solar_kw = self._get_value(solar_profile, t)
+
+            # --------------------------------------------------
+            # 1. CONTROLLER DECISION
+            # --------------------------------------------------
+            decision = self.controller.decide(
+                solar_kw=solar_kw,
+                load_kw=load_kw,
+                battery=self.battery
             )
 
-            decision = self.controller.decide(
-                solar_kw, load_kw, self.battery
-            )
-            # ==============================
-            # SAFETY INVARIANT CHECK (PHASE 2 FINAL)
-            # ==============================
+            # --------------------------------------------------
+            # 2. APPLY GENERATOR COMMAND
+            # --------------------------------------------------
+            if decision["generator_cmd"] == "START":
+                self.generator.start()
+            elif decision["generator_cmd"] == "STOP":
+                self.generator.stop()
+            # HOLD → no action
+
+            # --------------------------------------------------
+            # 3. POWER BALANCE
+            # --------------------------------------------------
+            gen_kw = self.generator.get_power()
+            supply_kw = solar_kw + gen_kw
+            deficit_kw = load_kw - supply_kw
+
+            if deficit_kw > 0 and self.battery.soc > 0.30:
+                discharged_kw = self.battery.discharge(deficit_kw)
+                supply_kw += discharged_kw
+
+            blackout = supply_kw < load_kw
+
+            # --------------------------------------------------
+            # 4. SAFETY INVARIANT CHECK
+            # --------------------------------------------------
             SafetyInvariants.check(
                 soc=self.battery.soc,
-                generator_cmd="START" if decision["generator"] else "STOP",
-                generator_available=True,   # generator faults not modeled yet
-                load_shed_level=0,          # load shedding not wired yet
-                safe_mode=False             # SAFE_MODE not wired yet
+                generator_cmd=decision["generator_cmd"],
+                generator_available=True,
+                load_shed_level=0,
+                safe_mode=False
             )
 
-
-            if decision["generator"]:
-                self.generator.start()
-            else:
-                self.generator.stop()
-
-            gen_kw = self.generator.get_power()
-
-            supply = solar_kw + gen_kw
-            deficit = load_kw - supply
-
-            if deficit > 0:
-                discharged = self.battery.discharge(deficit)
-                supply += discharged
-
-            blackout = supply < load_kw
-
+            # --------------------------------------------------
+            # 5. LOG RESULTS
+            # --------------------------------------------------
             results.append({
-                "hour": hour,
+                "time": t,
                 "load_kw": load_kw,
                 "solar_kw": solar_kw,
                 "generator_kw": gen_kw,
-                "battery_soc": round(self.battery.soc, 2),
-                "blackout": blackout
+                "battery_soc": self.battery.soc,
+                "generator_cmd": decision["generator_cmd"],
+                "state": decision["state"],
+                "blackout": blackout,
+                "reason": decision["reason"]
             })
 
         return pd.DataFrame(results)
